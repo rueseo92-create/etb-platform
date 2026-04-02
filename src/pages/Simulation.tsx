@@ -7,7 +7,7 @@ import {
   BarChart, Bar, Cell,
 } from 'recharts'
 
-type SimTab = 'investor' | 'clearinghouse'
+type SimTab = 'investor' | 'clearinghouse' | 'supply'
 
 /* ── Clearinghouse Simulation Data ── */
 type SimMode = 'A' | 'B' | 'C' | 'D'
@@ -112,9 +112,19 @@ export default function Simulation() {
         >
           Clearinghouse
         </button>
+        <button
+          onClick={() => setTab('supply')}
+          className={`px-5 py-2 text-sm font-medium transition-colors ${
+            tab === 'supply' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground hover:text-foreground'
+          }`}
+        >
+          Supply Stress Test
+        </button>
       </div>
 
-      {tab === 'investor' ? <InvestorSim /> : <ClearinghouseSim />}
+      {tab === 'investor' && <InvestorSim />}
+      {tab === 'clearinghouse' && <ClearinghouseSim />}
+      {tab === 'supply' && <SupplyStressTest />}
     </div>
   )
 }
@@ -638,6 +648,424 @@ function ClearinghouseSim() {
               <p><span className="font-mono" style={{ color: '#534AB7' }}>Sim A</span> — No accounting for unlisted value transfer</p>
               <p><span className="font-mono" style={{ color: '#1D9E75' }}>Sim C</span> — 98.5% absorbed by CH, token price ~$0</p>
               <p><span className="font-mono" style={{ color: '#71717A' }}>Sim D</span> — 96% data discarded, unreliable ELO</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+/* ═══════════════════════════════════════════════════
+   SUPPLY STRESS TEST — 전체 상장 + 고정 공급량 시나리오
+   ═══════════════════════════════════════════════════ */
+
+// Phases of progressive listing
+const LISTING_PHASES = [
+  { n: 10, label: 'Phase 0', desc: 'Top 10 only', reserveM: 100 },
+  { n: 20, label: 'Phase 1', desc: 'Current (20 teams)', reserveM: 125 },
+  { n: 30, label: 'Phase 2', desc: '+10 expansion', reserveM: 145 },
+  { n: 40, label: 'Phase 3', desc: '+10 more', reserveM: 168 },
+  { n: 51, label: 'Phase 4', desc: 'All 51 listed', reserveM: 195 },
+]
+
+const SUPPLY_FIXED = 1_000_000
+const allReturnsSorted = [...ETB_DATA.baskets.balanced.annual_returns].sort((a, b) => b.final_elo - a.final_elo)
+
+function SupplyStressTest() {
+  const [selectedPhase, setSelectedPhase] = useState(1) // default Phase 1 (current)
+  const [supplyMode, setSupplyMode] = useState<'fixed' | 'dynamic'>('fixed')
+
+  const phase = LISTING_PHASES[selectedPhase]
+  const listedTeams = allReturnsSorted.slice(0, phase.n)
+  const totalElo = listedTeams.reduce((s, t) => s + t.final_elo, 0)
+  const reserve = phase.reserveM * 1e6
+  const topElo = allReturnsSorted[0].final_elo
+
+  // Compute per-team data for selected phase
+  const teamData = useMemo(() => {
+    return listedTeams.map(t => {
+      const share = t.final_elo / totalElo
+      const reserveAlloc = reserve * share
+      const supply = supplyMode === 'fixed'
+        ? SUPPLY_FIXED
+        : Math.round(SUPPLY_FIXED * (t.final_elo / topElo))
+      const nav = reserveAlloc / supply
+      const mcap = nav * supply
+      return {
+        team: t.team,
+        elo: t.final_elo,
+        share: share * 100,
+        reserveAlloc,
+        supply,
+        nav,
+        mcap,
+        isBig6: t.is_big6,
+        seasons: t.seasons_active,
+      }
+    })
+  }, [selectedPhase, supplyMode, listedTeams, totalElo, reserve, topElo])
+
+  const navs = teamData.map(t => t.nav)
+  const minNav = Math.min(...navs)
+  const maxNav = Math.max(...navs)
+  const avgNav = navs.reduce((s, v) => s + v, 0) / navs.length
+  const navRange = maxNav / minNav
+
+  // Phase comparison chart data
+  const phaseChartData = useMemo(() => {
+    // Track Liverpool NAV across phases
+    return LISTING_PHASES.map((p, _i) => {
+      const listed = allReturnsSorted.slice(0, p.n)
+      const elo = listed.reduce((s, t) => s + t.final_elo, 0)
+      const res = p.reserveM * 1e6
+
+      // Liverpool
+      const lvp = allReturnsSorted[0]
+      const lvpShare = lvp.final_elo / elo
+      const lvpNav = (res * lvpShare) / SUPPLY_FIXED
+
+      // Median team
+      const medTeam = listed[Math.floor(listed.length / 2)]
+      const medShare = medTeam.final_elo / elo
+      const medNav = (res * medShare) / SUPPLY_FIXED
+
+      // Bottom team
+      const botTeam = listed[listed.length - 1]
+      const botShare = botTeam.final_elo / elo
+      const botNav = (res * botShare) / SUPPLY_FIXED
+
+      return {
+        phase: p.label,
+        teams: p.n,
+        topNav: parseFloat(lvpNav.toFixed(2)),
+        medNav: parseFloat(medNav.toFixed(2)),
+        botNav: parseFloat(botNav.toFixed(2)),
+        range: parseFloat((lvpNav / botNav).toFixed(2)),
+      }
+    })
+  }, [])
+
+  // Problems detected
+  const problems = useMemo(() => {
+    const issues: { severity: 'critical' | 'warning' | 'info'; title: string; detail: string }[] = []
+
+    // NAV dilution from Phase 1
+    if (selectedPhase > 1) {
+      const phase1Listed = allReturnsSorted.slice(0, 20)
+      const phase1Elo = phase1Listed.reduce((s, t) => s + t.final_elo, 0)
+      const phase1LvpNav = (125e6 * (allReturnsSorted[0].final_elo / phase1Elo)) / SUPPLY_FIXED
+      const currentLvpNav = teamData[0]?.nav || 0
+      const dilution = ((currentLvpNav - phase1LvpNav) / phase1LvpNav * 100)
+
+      if (dilution < -10) {
+        issues.push({
+          severity: 'critical',
+          title: `기존 투자자 NAV ${dilution.toFixed(1)}% 희석`,
+          detail: `Liverpool NAV: $${phase1LvpNav.toFixed(2)} → $${currentLvpNav.toFixed(2)}. 신규 팀 상장으로 기존 투자자 자산가치 하락.`,
+        })
+      }
+    }
+
+    // Price differentiation too low
+    if (navRange < 2.0) {
+      issues.push({
+        severity: 'warning',
+        title: `가격 차별화 부족 (${navRange.toFixed(1)}x)`,
+        detail: `1위 $${maxNav.toFixed(2)} vs 꼴찌 $${minNav.toFixed(2)}. 고정 공급량으로 실력 차이가 가격에 충분히 반영되지 않음.`,
+      })
+    }
+
+    // Small team oversupply
+    const smallTeams = teamData.filter(t => t.seasons < 5)
+    if (smallTeams.length > 0 && supplyMode === 'fixed') {
+      issues.push({
+        severity: 'warning',
+        title: `소규모 팀 과잉 공급 (${smallTeams.length}팀)`,
+        detail: `${smallTeams.map(t => t.team).join(', ')} — 활동 시즌이 적은 팀에 1M 토큰은 유동성 분산 초래.`,
+      })
+    }
+
+    // CH becomes irrelevant
+    if (phase.n >= 51) {
+      issues.push({
+        severity: 'info',
+        title: 'Clearinghouse 무용화',
+        detail: '전체 팀 상장 시 unlisted 팀이 없어 CH 잔액이 0이 됨. 승격/강등 시에만 일시적 CH 필요.',
+      })
+    }
+
+    // Market cap uniformity
+    if (supplyMode === 'fixed' && phase.n > 20) {
+      const mcaps = teamData.map(t => t.mcap)
+      const mcapRange = Math.max(...mcaps) / Math.min(...mcaps)
+      if (mcapRange < 2.0) {
+        issues.push({
+          severity: 'warning',
+          title: `시가총액 편차 ${mcapRange.toFixed(1)}x — 투자 매력도 저하`,
+          detail: '모든 팀의 시총이 비슷하면 강팀 투자 유인이 약해짐. 동적 공급으로 시총 차별화 가능.',
+        })
+      }
+    }
+
+    if (issues.length === 0) {
+      issues.push({
+        severity: 'info',
+        title: '현재 설정에서 심각한 문제 없음',
+        detail: '20팀 기준 고정 공급량은 적절한 수준.',
+      })
+    }
+
+    return issues
+  }, [selectedPhase, supplyMode, teamData, navRange, maxNav, minNav, phase.n])
+
+  return (
+    <div className="space-y-6">
+      <p className="text-sm text-muted-foreground -mt-2">
+        모든 팀이 상장되면 고정 공급량(1M/팀)에서 어떤 문제가 발생하는가?
+      </p>
+
+      {/* Controls */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Phase selector */}
+        <div className="rounded-lg border border-border bg-card p-5">
+          <h3 className="text-sm font-semibold text-foreground mb-3">상장 단계</h3>
+          <div className="space-y-2">
+            {LISTING_PHASES.map((p, i) => (
+              <button
+                key={i}
+                onClick={() => setSelectedPhase(i)}
+                className={`w-full flex items-center justify-between rounded-md border p-3 text-left transition-all ${
+                  selectedPhase === i
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                    : 'border-border bg-card hover:bg-surface-elevated'
+                }`}
+              >
+                <div>
+                  <span className="text-sm font-semibold text-foreground">{p.label}</span>
+                  <span className="text-xs text-muted-foreground ml-2">{p.desc}</span>
+                </div>
+                <div className="text-right">
+                  <span className="text-sm font-mono text-foreground">{p.n} teams</span>
+                  <span className="text-xs text-muted-foreground ml-2">${p.reserveM}M</span>
+                </div>
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Supply mode + problems */}
+        <div className="space-y-4">
+          <div className="rounded-lg border border-border bg-card p-5">
+            <h3 className="text-sm font-semibold text-foreground mb-3">공급 모델</h3>
+            <div className="grid grid-cols-2 gap-2">
+              <button
+                onClick={() => setSupplyMode('fixed')}
+                className={`rounded-md border p-3 text-left transition-all ${
+                  supplyMode === 'fixed'
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                    : 'border-border hover:bg-surface-elevated'
+                }`}
+              >
+                <p className="text-sm font-semibold text-foreground">Fixed Supply</p>
+                <p className="text-[10px] text-muted-foreground">모든 팀 1M 토큰</p>
+              </button>
+              <button
+                onClick={() => setSupplyMode('dynamic')}
+                className={`rounded-md border p-3 text-left transition-all ${
+                  supplyMode === 'dynamic'
+                    ? 'border-primary bg-primary/5 ring-1 ring-primary/30'
+                    : 'border-border hover:bg-surface-elevated'
+                }`}
+              >
+                <p className="text-sm font-semibold text-foreground">ELO-Scaled</p>
+                <p className="text-[10px] text-muted-foreground">ELO 비례 공급량</p>
+              </button>
+            </div>
+          </div>
+
+          {/* Problem cards */}
+          <div className="rounded-lg border border-border bg-card p-5">
+            <h3 className="text-sm font-semibold text-foreground mb-3">감지된 문제</h3>
+            <div className="space-y-2">
+              {problems.map((p, i) => (
+                <div
+                  key={i}
+                  className={`rounded-md p-3 border ${
+                    p.severity === 'critical'
+                      ? 'border-loss/30 bg-loss/5'
+                      : p.severity === 'warning'
+                      ? 'border-yellow-500/30 bg-yellow-500/5'
+                      : 'border-border bg-secondary/30'
+                  }`}
+                >
+                  <div className="flex items-center gap-2 mb-1">
+                    <span className={`w-2 h-2 rounded-full ${
+                      p.severity === 'critical' ? 'bg-loss' : p.severity === 'warning' ? 'bg-yellow-500' : 'bg-muted-foreground'
+                    }`} />
+                    <span className={`text-xs font-semibold ${
+                      p.severity === 'critical' ? 'text-loss' : p.severity === 'warning' ? 'text-yellow-500' : 'text-muted-foreground'
+                    }`}>{p.title}</span>
+                  </div>
+                  <p className="text-[11px] text-muted-foreground leading-relaxed">{p.detail}</p>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Stats */}
+      <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
+        <StatCard label="Listed Teams" value={`${phase.n}`} sub={`of 51 total`} />
+        <StatCard label="Reserve Pool" value={`$${phase.reserveM}M`} sub="basket growth applied" />
+        <StatCard
+          label="NAV Range"
+          value={`${navRange.toFixed(1)}x`}
+          sub={`$${minNav.toFixed(2)} — $${maxNav.toFixed(2)}`}
+          valueClass={navRange < 2 ? 'text-yellow-500' : 'text-gain'}
+        />
+        <StatCard label="Avg NAV" value={`$${avgNav.toFixed(2)}`} sub={supplyMode === 'fixed' ? '1M supply each' : 'ELO-scaled'} />
+        <StatCard
+          label="Supply Mode"
+          value={supplyMode === 'fixed' ? 'Fixed' : 'Dynamic'}
+          sub={supplyMode === 'fixed' ? '균등 1M' : 'ELO 비례'}
+        />
+      </div>
+
+      {/* Phase progression chart */}
+      <div className="rounded-lg border border-border bg-card p-5">
+        <h3 className="text-sm font-semibold text-foreground mb-1">NAV 변화 — 상장 확대 시 (고정 공급량)</h3>
+        <p className="text-xs text-muted-foreground mb-4">
+          팀 수 증가에 따른 상위/중위/하위 팀 NAV 변화 (리저브 성장 반영)
+        </p>
+        <div className="h-[280px]">
+          <ResponsiveContainer width="100%" height="100%" minWidth={0}>
+            <AreaChart data={phaseChartData}>
+              <CartesianGrid strokeDasharray="3 3" stroke="hsl(220 14% 18%)" />
+              <XAxis
+                dataKey="phase"
+                tick={{ fill: 'hsl(215 15% 50%)', fontSize: 11 }}
+                tickLine={false} axisLine={false}
+              />
+              <YAxis
+                tick={{ fill: 'hsl(215 15% 50%)', fontSize: 10 }}
+                tickLine={false} axisLine={false}
+                tickFormatter={(v: number) => `$${v.toFixed(0)}`}
+              />
+              <Tooltip
+                contentStyle={{ background: 'hsl(220 18% 10%)', border: '1px solid hsl(220 14% 18%)', borderRadius: 8, fontSize: 11 }}
+                formatter={(value: unknown, name: unknown) => {
+                  const labels: Record<string, string> = { topNav: 'Top (Liverpool)', medNav: 'Median', botNav: 'Bottom' }
+                  return [`$${Number(value).toFixed(2)}`, labels[String(name)] || String(name)]
+                }}
+              />
+              <Area type="monotone" dataKey="topNav" stroke="hsl(142 72% 50%)" fill="hsl(142 72% 50%)" fillOpacity={0.08} strokeWidth={2} />
+              <Area type="monotone" dataKey="medNav" stroke="hsl(215 80% 55%)" fill="hsl(215 80% 55%)" fillOpacity={0.08} strokeWidth={2} />
+              <Area type="monotone" dataKey="botNav" stroke="hsl(0 72% 50%)" fill="hsl(0 72% 50%)" fillOpacity={0.08} strokeWidth={2} />
+            </AreaChart>
+          </ResponsiveContainer>
+        </div>
+        <div className="flex gap-6 mt-3">
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-0.5 rounded bg-gain" />
+            <span className="text-xs text-muted-foreground">Top (Liverpool)</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-0.5 rounded" style={{ backgroundColor: 'hsl(215 80% 55%)' }} />
+            <span className="text-xs text-muted-foreground">Median</span>
+          </div>
+          <div className="flex items-center gap-1.5">
+            <span className="w-3 h-0.5 rounded" style={{ backgroundColor: 'hsl(0 72% 50%)' }} />
+            <span className="text-xs text-muted-foreground">Bottom</span>
+          </div>
+        </div>
+      </div>
+
+      {/* Team table */}
+      <div className="rounded-lg border border-border bg-card p-5">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="text-sm font-semibold text-foreground">
+            Team Details — {phase.label} ({phase.n} teams, {supplyMode === 'fixed' ? 'Fixed' : 'Dynamic'} Supply)
+          </h3>
+        </div>
+        <div className="overflow-hidden rounded-md border border-border">
+          <div className="grid grid-cols-[1fr_4rem_5rem_5rem_5rem_5rem] gap-x-2 px-4 py-2 border-b border-border text-[10px] text-muted-foreground uppercase tracking-wider bg-muted/30">
+            <span>Team</span>
+            <span className="text-right">ELO</span>
+            <span className="text-right">Reserve</span>
+            <span className="text-right">Supply</span>
+            <span className="text-right">NAV</span>
+            <span className="text-right">Mkt Cap</span>
+          </div>
+          {teamData.slice(0, 20).map(t => (
+            <div
+              key={t.team}
+              className="grid grid-cols-[1fr_4rem_5rem_5rem_5rem_5rem] gap-x-2 px-4 py-2 border-b border-border/50 text-xs items-center hover:bg-secondary/30 transition-colors"
+            >
+              <div className="flex items-center gap-2 min-w-0">
+                {t.isBig6 && <span className="w-1.5 h-1.5 rounded-full bg-primary shrink-0" />}
+                {!t.isBig6 && <span className="w-1.5 h-1.5 rounded-full bg-muted-foreground shrink-0" />}
+                <span className="text-sm text-foreground truncate">{t.team}</span>
+              </div>
+              <span className="text-right font-mono text-muted-foreground">{t.elo.toFixed(0)}</span>
+              <span className="text-right font-mono text-foreground">${(t.reserveAlloc / 1e6).toFixed(2)}M</span>
+              <span className="text-right font-mono text-muted-foreground">{(t.supply / 1e3).toFixed(0)}K</span>
+              <span className={`text-right font-mono font-semibold ${
+                t.nav === maxNav ? 'text-gain' : t.nav === minNav ? 'text-loss' : 'text-foreground'
+              }`}>${t.nav.toFixed(2)}</span>
+              <span className="text-right font-mono text-muted-foreground">${(t.mcap / 1e6).toFixed(2)}M</span>
+            </div>
+          ))}
+          {phase.n > 20 && (
+            <div className="px-4 py-2 text-xs text-muted-foreground text-center border-b border-border/50">
+              ... and {phase.n - 20} more teams
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Conclusion card */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <div className="rounded-lg border border-loss/30 bg-card p-6">
+          <h3 className="text-sm font-semibold text-loss mb-3">Fixed Supply 문제점</h3>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <div className="flex gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-loss mt-1.5 shrink-0" />
+              <p><span className="text-foreground font-medium">NAV 희석 -56%</span> — 20팀→51팀 전환 시 기존 투자자 NAV가 절반 이하로 하락</p>
+            </div>
+            <div className="flex gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-loss mt-1.5 shrink-0" />
+              <p><span className="text-foreground font-medium">가격 차별화 1.6x</span> — 1위와 꼴찌 가격 차이가 너무 작아 투자 유인 부족</p>
+            </div>
+            <div className="flex gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-loss mt-1.5 shrink-0" />
+              <p><span className="text-foreground font-medium">유동성 분산</span> — 소규모 팀에 100만 토큰은 과도한 공급</p>
+            </div>
+            <div className="flex gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-loss mt-1.5 shrink-0" />
+              <p><span className="text-foreground font-medium">CH 무용화</span> — 전체 상장 시 Clearinghouse 역할 소멸</p>
+            </div>
+          </div>
+        </div>
+        <div className="rounded-lg border border-gain/30 bg-card p-6">
+          <h3 className="text-sm font-semibold text-gain mb-3">대안: Dynamic Supply</h3>
+          <div className="space-y-3 text-sm text-muted-foreground">
+            <div className="flex gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-gain mt-1.5 shrink-0" />
+              <p><span className="text-foreground font-medium">ELO 비례 공급량</span> — 강팀 1M, 약팀 ~600K로 시총 차별화</p>
+            </div>
+            <div className="flex gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-gain mt-1.5 shrink-0" />
+              <p><span className="text-foreground font-medium">균일 NAV 유지</span> — 모든 팀 동일 기준가 → 가격은 ELO 변동으로 결정</p>
+            </div>
+            <div className="flex gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-gain mt-1.5 shrink-0" />
+              <p><span className="text-foreground font-medium">점진적 상장</span> — 신규 팀 상장 시 리저브 증자 연동으로 희석 방지</p>
+            </div>
+            <div className="flex gap-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-gain mt-1.5 shrink-0" />
+              <p><span className="text-foreground font-medium">시즌별 리밸런싱</span> — 승격/강등 시 공급량 자동 조정</p>
             </div>
           </div>
         </div>
