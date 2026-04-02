@@ -5,7 +5,7 @@ const navItems = [
   { label: 'Dashboard', path: '/' },
   { label: 'Markets', path: '/markets' },
   { label: 'Reserve', path: '/reserve' },
-  { label: 'Clearinghouse', path: '/clearinghouse' },
+  { label: 'Simulation', path: '/simulation' },
 ]
 
 export default function TopBar() {
