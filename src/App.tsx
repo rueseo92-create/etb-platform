@@ -4,6 +4,7 @@ import Dashboard from '@/pages/Landing'
 import Markets from '@/pages/Markets'
 import TeamDetail from '@/pages/TeamDetail'
 import Reserve from '@/pages/Reserve'
+import Clearinghouse from '@/pages/Clearinghouse'
 
 export default function App() {
   return (
@@ -14,6 +15,7 @@ export default function App() {
         <Route path="/markets" element={<Markets />} />
         <Route path="/team/:id" element={<TeamDetail />} />
         <Route path="/reserve" element={<Reserve />} />
+        <Route path="/clearinghouse" element={<Clearinghouse />} />
       </Routes>
     </HashRouter>
   )
