@@ -76,7 +76,7 @@ export default function Whitepaper() {
           <h2 className="text-sm font-bold text-foreground uppercase tracking-wider mb-4">{t('Table of Contents', '목차', lang)}</h2>
           <div className="space-y-1.5">
             {TOC.map(item => (
-              <a key={item.id} href={`#${item.id}`} className="flex items-baseline gap-3 text-sm text-muted-foreground hover:text-primary transition-colors group">
+              <a key={item.id} href={`#${item.id}`} onClick={(e) => { e.preventDefault(); document.getElementById(item.id)?.scrollIntoView({ behavior: 'smooth' }) }} className="flex items-baseline gap-3 text-sm text-muted-foreground hover:text-primary transition-colors group cursor-pointer">
                 {item.num && <span className="font-mono text-xs text-primary/50 w-6">{item.num}.</span>}
                 {!item.num && <span className="w-6" />}
                 <span className="group-hover:underline">{item.label}</span>
