@@ -6,10 +6,11 @@ import TeamDetail from '@/pages/TeamDetail'
 import Reserve from '@/pages/Reserve'
 import Simulation from '@/pages/Simulation'
 import IRDeck from '@/pages/IRDeck'
+import Whitepaper from '@/pages/Whitepaper'
 
 function AppLayout() {
   const location = useLocation()
-  const hideTopBar = location.pathname === '/ir'
+  const hideTopBar = location.pathname === '/ir' || location.pathname === '/whitepaper'
 
   return (
     <>
@@ -21,6 +22,7 @@ function AppLayout() {
         <Route path="/reserve" element={<Reserve />} />
         <Route path="/simulation" element={<Simulation />} />
         <Route path="/ir" element={<IRDeck />} />
+        <Route path="/whitepaper" element={<Whitepaper />} />
       </Routes>
     </>
   )
